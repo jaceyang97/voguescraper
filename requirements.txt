@@ -2,4 +2,5 @@ requests
 beautifulsoup4
 html5lib
 unidecode
-tqdm
+rich
+questionary

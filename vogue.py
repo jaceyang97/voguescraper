@@ -9,13 +9,13 @@ import json
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
-from tqdm import tqdm
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, MofNCompleteColumn
 from unidecode import unidecode
 from urllib3.util.retry import Retry
 
@@ -117,92 +117,29 @@ def _pick_image_url(sources: dict, preferred: str = "xl") -> str | None:
 # Core API
 # ---------------------------------------------------------------------------
 
-def get_seasons(session: requests.Session | None = None) -> list[str]:
-    """Fetch the list of available seasons from Vogue."""
+
+def get_all_designers(session: requests.Session | None = None) -> list[str]:
+    """Fetch the full A-Z list of all designers from Vogue Runway."""
     session = session or _create_session()
-    html = _fetch_page(session, BASE_URL)
-    state = _extract_preloaded_state(html)
-
-    transformed = state.get("transformed", state)
-    # Try known keys where season data might live
-    for key in ["runwaySeasonPage", "runwayHomepage", "runwayShowsIndex"]:
-        section = transformed.get(key, {})
-        if not section:
-            continue
-        # Look for season navigation / tabs / links
-        for sub_key in ["seasonNavLinks", "seasons", "tabs", "seasonLinks", "navLinks"]:
-            items = section.get(sub_key, [])
-            if items:
-                return [item.get("hed") or item.get("title") or item.get("label") or item.get("text", "")
-                        for item in items if isinstance(item, dict)]
-
-    # Fallback: search for any list of objects with season-like titles
-    seasons = []
-    _find_seasons_recursive(transformed, seasons)
-    return seasons
-
-
-def _find_seasons_recursive(obj, results, depth=0):
-    """Recursively search for season-like data in nested dicts."""
-    if depth > 6 or len(results) > 50:
-        return
-    if isinstance(obj, dict):
-        # Check if this looks like a season entry
-        hed = obj.get("hed") or obj.get("title", "")
-        if isinstance(hed, str) and re.match(r"(spring|fall|resort|pre-fall)\s+\d{4}", hed, re.IGNORECASE):
-            if hed not in results:
-                results.append(hed)
-        for v in obj.values():
-            _find_seasons_recursive(v, results, depth + 1)
-    elif isinstance(obj, list):
-        for item in obj:
-            _find_seasons_recursive(item, results, depth + 1)
-
-
-def get_season_designers(season: str, session: requests.Session | None = None) -> list[str]:
-    """Fetch the list of designers in a given season."""
-    session = session or _create_session()
-    season_slug = slugify(season)
-    url = f"{BASE_URL}/{season_slug}"
+    url = f"{BASE_URL}/designers"
     html = _fetch_page(session, url)
     state = _extract_preloaded_state(html)
 
     transformed = state.get("transformed", state)
+    grouped = (
+        transformed
+        .get("allRunwayDesigners", {})
+        .get("groupedLinks", [])
+    )
+
     designers = []
-
-    # Search for designer lists in the preloaded state
-    for key in ["runwaySeasonPage", "runwayShowsIndex", "runwayHomepage"]:
-        section = transformed.get(key, {})
-        if not section:
-            continue
-        for sub_key in ["designers", "shows", "collections", "items", "brands"]:
-            items = section.get(sub_key, [])
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict):
-                        name = item.get("brand") or item.get("designer") or item.get("hed") or item.get("title", "")
-                        if name and name not in designers:
-                            designers.append(name)
-
-    if not designers:
-        _find_designers_recursive(transformed, designers)
+    for group in grouped:
+        for link in group.get("links", []):
+            name = link.get("text", "").strip()
+            if name:
+                designers.append(name)
 
     return designers
-
-
-def _find_designers_recursive(obj, results, depth=0):
-    """Recursively search for designer-like data."""
-    if depth > 6 or len(results) > 500:
-        return
-    if isinstance(obj, dict):
-        brand = obj.get("brand") or obj.get("designer", "")
-        if isinstance(brand, str) and len(brand) > 1 and brand not in results:
-            results.append(brand)
-        for v in obj.values():
-            _find_designers_recursive(v, results, depth + 1)
-    elif isinstance(obj, list):
-        for item in obj:
-            _find_designers_recursive(item, results, depth + 1)
 
 
 def get_designer_shows(designer: str, session: requests.Session | None = None) -> list[Show]:
@@ -284,11 +221,18 @@ def download_images(
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(_download_one, img): img for img in images}
-        with tqdm(total=len(images), desc="Downloading", unit="img") as pbar:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("[dim]{task.fields[status]}"),
+        ) as progress:
+            task = progress.add_task("Downloading", total=len(images), status="")
             for future in as_completed(futures):
                 if future.result():
                     downloaded += 1
-                pbar.update(1)
+                progress.update(task, advance=1, status=f"{downloaded} ok")
 
     return downloaded
 
@@ -311,29 +255,180 @@ def save_metadata(collection: Collection, output_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# Interactive mode
 # ---------------------------------------------------------------------------
 
-def cmd_seasons(args):
+def interactive():
+    """Rich interactive terminal UI for casual users."""
+    import questionary
+    from rich.console import Console
+    from rich.panel import Panel
+
+    console = Console()
     session = _create_session()
-    seasons = get_seasons(session)
-    if not seasons:
-        print("No seasons found.")
+
+    console.print(Panel.fit(
+        "[bold]Vogue Runway Scraper[/bold]\n"
+        "[dim]Interactive mode — download fashion show images from vogue.com[/dim]",
+    ))
+
+    # --- Load the global designer index ---
+    with console.status("[bold green]Loading designer index from Vogue..."):
+        try:
+            all_designers = get_all_designers(session)
+        except (requests.HTTPError, requests.ConnectionError, ValueError) as e:
+            console.print(f"[red]Could not load designer index: {e}[/red]")
+            return
+
+    if not all_designers:
+        console.print("[red]No designers found. Vogue may have changed their site.[/red]")
         return
-    print(f"Found {len(seasons)} seasons:\n")
-    for s in seasons:
-        print(f"  {s}")
+
+    console.print(f"  [dim]{len(all_designers)} designers loaded[/dim]\n")
+
+    BACK = "<< Back"
+
+    while True:
+        # --- Pick a designer ---
+        designer = questionary.autocomplete(
+            "Designer (type to search):",
+            choices=all_designers,
+            validate=lambda val: val in all_designers or "Pick a designer from the list",
+        ).ask()
+
+        if designer is None:
+            return
+
+        # --- Fetch that designer's shows ---
+        with console.status(f"[bold green]Fetching shows for {designer}..."):
+            try:
+                shows = get_designer_shows(designer, session)
+            except (requests.HTTPError, requests.ConnectionError, ValueError) as e:
+                console.print(f"[red]Error fetching shows: {e}[/red]")
+                return
+
+        if not shows:
+            console.print(f"[yellow]No shows found for '{designer}'.[/yellow]")
+            continue
+
+        console.print(f"  [dim]{len(shows)} shows found[/dim]\n")
+
+        # --- How many shows? ---
+        scope = questionary.select(
+            "What would you like to download?",
+            choices=[
+                questionary.Choice("All shows", value="all"),
+                questionary.Choice("Pick specific shows", value="pick"),
+                questionary.Choice(BACK, value="back"),
+            ],
+        ).ask()
+
+        if scope is None:
+            return
+        if scope == "back":
+            console.print()
+            continue
+        if scope == "all":
+            selected_shows = shows
+            break
+
+        # --- Pick specific shows ---
+        show_choices = [s.title for s in shows] + [BACK]
+
+        selected = questionary.checkbox(
+            "Select shows (SPACE to check/uncheck, ENTER when done):",
+            choices=show_choices,
+        ).ask()
+
+        if not selected or selected == [BACK]:
+            if not selected:
+                console.print("[yellow]Nothing selected. Use SPACE to check shows before pressing ENTER.[/yellow]\n")
+            continue
+
+        selected = [s for s in selected if s != BACK]
+        if not selected:
+            continue
+
+        title_set = set(selected)
+        selected_shows = [s for s in shows if s.title in title_set]
+        break
+
+    # --- Resolution ---
+    resolution = questionary.select(
+        "Image resolution:",
+        choices=[
+            questionary.Choice("XL (highest)", value="xl"),
+            questionary.Choice("LG", value="lg"),
+            questionary.Choice("MD", value="md"),
+            questionary.Choice("SM (smallest)", value="sm"),
+        ],
+        default="xl",
+    ).ask()
+
+    if resolution is None:
+        return
+
+    # --- Output directory ---
+    output_dir = questionary.text(
+        "Output directory:",
+        default="./output",
+    ).ask()
+
+    if output_dir is None:
+        return
+
+    # --- Download ---
+    output_base = Path(output_dir)
+    designer_slug = slugify(designer)
+
+    console.print()
+    for show in selected_shows:
+        console.rule(f"[bold]{designer} / {show.title}[/bold]")
+
+        with console.status("[green]Fetching image list..."):
+            try:
+                images = get_show_images(designer, show.slug, session, resolution)
+            except (requests.HTTPError, ValueError) as e:
+                console.print(f"[red]  Error: {e}[/red]")
+                continue
+
+        if not images:
+            console.print("[yellow]  No images found, skipping.[/yellow]")
+            continue
+
+        console.print(f"  Found [bold]{len(images)}[/bold] images")
+
+        out_dir = output_base / designer_slug / show.slug
+        collection = Collection(designer=designer, show=show, images=images)
+        save_metadata(collection, out_dir)
+
+        count = download_images(images, out_dir, session)
+        console.print(f"  [green]Downloaded {count}/{len(images)} images[/green] -> {out_dir}\n")
+
+    console.print(Panel.fit("[bold green]Done![/bold green]"))
+
+
+# ---------------------------------------------------------------------------
+# CLI (for scripts / LLM agents)
+# ---------------------------------------------------------------------------
 
 
 def cmd_designers(args):
     session = _create_session()
-    designers = get_season_designers(args.season, session)
+    designers = get_all_designers(session)
     if not designers:
-        print(f"No designers found for season '{args.season}'.")
+        print("No designers found.")
         return
-    print(f"Found {len(designers)} designers in {args.season}:\n")
+
+    if args.search:
+        query = args.search.lower()
+        designers = [d for d in designers if query in d.lower()]
+        if not designers:
+            print(f"No designers matching '{args.search}'.")
+            return
+
     for d in designers:
-        print(f"  {d}")
+        print(d)
 
 
 def cmd_shows(args):
@@ -382,17 +477,21 @@ def cmd_download(args):
 
 
 def main():
+    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] == "interactive"):
+        interactive()
+        return
+
     parser = argparse.ArgumentParser(
         description="Vogue Runway Scraper — download fashion show images from vogue.com"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # seasons
-    subparsers.add_parser("seasons", help="List available seasons")
+    # interactive (so --help shows it)
+    subparsers.add_parser("interactive", help="Launch interactive mode (default when no args)")
 
     # designers
-    p_designers = subparsers.add_parser("designers", help="List designers in a season")
-    p_designers.add_argument("-s", "--season", required=True, help="Season name")
+    p_designers = subparsers.add_parser("designers", help="List all designers (optionally filter by search term)")
+    p_designers.add_argument("-q", "--search", help="Filter designers by name (case-insensitive substring match)")
 
     # shows
     p_shows = subparsers.add_parser("shows", help="List shows for a designer")
@@ -410,7 +509,7 @@ def main():
 
     args = parser.parse_args()
     commands = {
-        "seasons": cmd_seasons,
+        "interactive": lambda _: interactive(),
         "designers": cmd_designers,
         "shows": cmd_shows,
         "download": cmd_download,

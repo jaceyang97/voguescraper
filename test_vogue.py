@@ -12,8 +12,6 @@ from vogue import (
     _pick_image_url,
     get_designer_shows,
     get_show_images,
-    get_seasons,
-    get_season_designers,
     save_metadata,
     ImageInfo,
     Show,
@@ -86,50 +84,6 @@ window.__PRELOADED_STATE__ = {
             }
           ]
         }
-      ]
-    }
-  }
-}
-</script>
-</body>
-</html>
-"""
-
-SAMPLE_SEASONS_PAGE_HTML = """
-<!DOCTYPE html>
-<html>
-<head><title>Fashion Shows</title></head>
-<body>
-<script type="text/javascript">
-window.__PRELOADED_STATE__ = {
-  "transformed": {
-    "runwaySeasonPage": {
-      "seasonNavLinks": [
-        {"hed": "Fall 2024 Ready-to-Wear"},
-        {"hed": "Spring 2025 Couture"},
-        {"hed": "Resort 2025"}
-      ]
-    }
-  }
-}
-</script>
-</body>
-</html>
-"""
-
-SAMPLE_SEASON_DESIGNERS_HTML = """
-<!DOCTYPE html>
-<html>
-<head><title>Fall 2024 Ready-to-Wear</title></head>
-<body>
-<script type="text/javascript">
-window.__PRELOADED_STATE__ = {
-  "transformed": {
-    "runwaySeasonPage": {
-      "designers": [
-        {"brand": "Yohji Yamamoto"},
-        {"brand": "Comme des Garçons"},
-        {"brand": "Issey Miyake"}
       ]
     }
   }
@@ -248,31 +202,6 @@ class TestGetShowImages(unittest.TestCase):
         # First image: md is available, should pick md
         self.assertEqual(images[0].url, "https://assets.vogue.com/photos/abc/md.jpg")
 
-
-class TestGetSeasons(unittest.TestCase):
-    @patch("vogue._fetch_page")
-    def test_parses_seasons(self, mock_fetch):
-        mock_fetch.return_value = SAMPLE_SEASONS_PAGE_HTML
-        session = MagicMock()
-        seasons = get_seasons(session)
-
-        self.assertEqual(len(seasons), 3)
-        self.assertEqual(seasons[0], "Fall 2024 Ready-to-Wear")
-        self.assertEqual(seasons[1], "Spring 2025 Couture")
-        self.assertEqual(seasons[2], "Resort 2025")
-
-
-class TestGetSeasonDesigners(unittest.TestCase):
-    @patch("vogue._fetch_page")
-    def test_parses_designers(self, mock_fetch):
-        mock_fetch.return_value = SAMPLE_SEASON_DESIGNERS_HTML
-        session = MagicMock()
-        designers = get_season_designers("Fall 2024 Ready-to-Wear", session)
-
-        self.assertEqual(len(designers), 3)
-        self.assertEqual(designers[0], "Yohji Yamamoto")
-        self.assertEqual(designers[1], "Comme des Garçons")
-        self.assertEqual(designers[2], "Issey Miyake")
 
 
 class TestSaveMetadata(unittest.TestCase):
