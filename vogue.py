@@ -415,7 +415,24 @@ def main():
         "shows": cmd_shows,
         "download": cmd_download,
     }
-    commands[args.command](args)
+    try:
+        commands[args.command](args)
+    except requests.ConnectionError:
+        print("Error: Could not connect to vogue.com. Check your internet connection.", file=sys.stderr)
+        sys.exit(1)
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        if status == 404:
+            print("Error: Page not found. Check the designer name and season.", file=sys.stderr)
+        elif status == 403:
+            print("Error: Access denied by vogue.com (403).", file=sys.stderr)
+        else:
+            print(f"Error: HTTP {status} from vogue.com.", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Vogue may have changed their page structure.", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
