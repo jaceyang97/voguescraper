@@ -221,18 +221,23 @@ def download_images(
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(_download_one, img): img for img in images}
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TextColumn("[dim]{task.fields[status]}"),
-        ) as progress:
-            task = progress.add_task("Downloading", total=len(images), status="")
-            for future in as_completed(futures):
-                if future.result():
-                    downloaded += 1
-                progress.update(task, advance=1, status=f"{downloaded} ok")
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("[dim]{task.fields[status]}"),
+            ) as progress:
+                task = progress.add_task("Downloading", total=len(images), status="")
+                for future in as_completed(futures):
+                    if future.result():
+                        downloaded += 1
+                    progress.update(task, advance=1, status=f"{downloaded} ok")
+        except KeyboardInterrupt:
+            for f in futures:
+                f.cancel()
+            raise
 
     return downloaded
 
@@ -272,13 +277,17 @@ def interactive():
         "[dim]Interactive mode — download fashion show images from vogue.com[/dim]",
     ))
 
+    try:
+        _interactive_flow(console, session, questionary)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Interrupted — exiting.[/dim]")
+
+
+def _interactive_flow(console, session, questionary):
+    """Inner interactive flow, separated so KeyboardInterrupt is caught cleanly."""
     # --- Load the global designer index ---
     with console.status("[bold green]Loading designer index from Vogue..."):
-        try:
-            all_designers = get_all_designers(session)
-        except (requests.HTTPError, requests.ConnectionError, ValueError) as e:
-            console.print(f"[red]Could not load designer index: {e}[/red]")
-            return
+        all_designers = get_all_designers(session)
 
     if not all_designers:
         console.print("[red]No designers found. Vogue may have changed their site.[/red]")
@@ -290,6 +299,7 @@ def interactive():
 
     while True:
         # --- Pick a designer ---
+        console.print("[dim]Ctrl+C to quit[/dim]")
         designer = questionary.autocomplete(
             "Designer (type to search):",
             choices=all_designers,
@@ -301,11 +311,7 @@ def interactive():
 
         # --- Fetch that designer's shows ---
         with console.status(f"[bold green]Fetching shows for {designer}..."):
-            try:
-                shows = get_designer_shows(designer, session)
-            except (requests.HTTPError, requests.ConnectionError, ValueError) as e:
-                console.print(f"[red]Error fetching shows: {e}[/red]")
-                return
+            shows = get_designer_shows(designer, session)
 
         if not shows:
             console.print(f"[yellow]No shows found for '{designer}'.[/yellow]")
@@ -321,6 +327,7 @@ def interactive():
                 questionary.Choice("Pick specific shows", value="pick"),
                 questionary.Choice(BACK, value="back"),
             ],
+            instruction="(Ctrl+C to quit)",
         ).ask()
 
         if scope is None:
@@ -335,9 +342,12 @@ def interactive():
         # --- Pick specific shows ---
         show_choices = [s.title for s in shows] + [BACK]
 
+        console.print("[bold yellow]  TIP: press SPACE to check/uncheck shows, then ENTER to confirm[/bold yellow]\n")
+
         selected = questionary.checkbox(
-            "Select shows (SPACE to check/uncheck, ENTER when done):",
+            "Select shows:",
             choices=show_choices,
+            instruction="(SPACE=toggle, ENTER=confirm, Ctrl+C=quit)",
         ).ask()
 
         if not selected or selected == [BACK]:
@@ -363,12 +373,14 @@ def interactive():
             questionary.Choice("SM (smallest)", value="sm"),
         ],
         default="xl",
+        instruction="(Ctrl+C to quit)",
     ).ask()
 
     if resolution is None:
         return
 
     # --- Output directory ---
+    console.print("[dim]Ctrl+C to quit[/dim]")
     output_dir = questionary.text(
         "Output directory:",
         default="./output",
@@ -378,6 +390,8 @@ def interactive():
         return
 
     # --- Download ---
+    from rich.panel import Panel
+
     output_base = Path(output_dir)
     designer_slug = slugify(designer)
 
@@ -386,11 +400,7 @@ def interactive():
         console.rule(f"[bold]{designer} / {show.title}[/bold]")
 
         with console.status("[green]Fetching image list..."):
-            try:
-                images = get_show_images(designer, show.slug, session, resolution)
-            except (requests.HTTPError, ValueError) as e:
-                console.print(f"[red]  Error: {e}[/red]")
-                continue
+            images = get_show_images(designer, show.slug, session, resolution)
 
         if not images:
             console.print("[yellow]  No images found, skipping.[/yellow]")

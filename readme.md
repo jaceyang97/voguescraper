@@ -6,9 +6,9 @@ Download fashion show images from Vogue Runway. Pure HTTP — no browser needed.
 
 ## Features
 
-- **Interactive mode** — guided terminal UI with designer search, show selection, and progress bars
+- **Interactive mode** — guided terminal UI with autocomplete designer search, show selection, and progress bars
 - **Scriptable CLI** — non-interactive commands for automation and LLM agents
-- **9,000+ designers** — full Vogue Runway index, searchable
+- **9,000+ designers** — full Vogue Runway index, searchable with autocomplete
 - **Concurrent downloads** — multi-threaded with configurable workers
 - **Resolution selection** — xl, lg, md, sm
 - **Metadata export** — `metadata.json` with show info and image URLs
@@ -29,7 +29,14 @@ pip install -r requirements.txt
 python vogue.py
 ```
 
-Launches a guided terminal UI: search for a designer, pick shows, choose resolution, and download.
+Search for any designer with autocomplete, pick shows, choose resolution, and download.
+
+<p>
+  <img src="demo-search.png" alt="Interactive designer search with autocomplete" width="600">
+</p>
+<p>
+  <img src="demo-download.png" alt="Download progress" width="600">
+</p>
 
 ### CLI (for scripts / agents)
 
@@ -47,7 +54,7 @@ python vogue.py download -d "Christian Dior" -s "Fall 2025 Ready-to-Wear"
 python vogue.py download -d "Christian Dior" --all -o ./output
 ```
 
-### Download options
+#### Download flags
 
 | Flag | Description | Default |
 |------|-------------|---------|
