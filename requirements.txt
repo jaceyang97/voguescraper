@@ -1,6 +1,5 @@
 requests
-lxml
-loguru
-selenium
-webdriver-manager
+beautifulsoup4
+html5lib
+unidecode
 tqdm
