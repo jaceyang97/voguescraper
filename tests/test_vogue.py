@@ -1,26 +1,28 @@
-"""Tests for vogue.py — uses mocked HTTP responses to validate parsing logic."""
+"""Tests for the vogue CLI and scraper — mocked HTTP, no network required."""
 
 import json
+import tempfile
 import unittest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 from io import StringIO
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from vogue import (
-    slugify,
+from vogue.cli import CLIError, _pop_flag, _pop_value, _truncate, cmd_designers, cmd_shows
+from vogue.scraper import (
+    Collection,
+    ImageInfo,
+    Show,
     _extract_preloaded_state,
     _pick_image_url,
     get_designer_shows,
     get_show_images,
     save_metadata,
-    ImageInfo,
-    Show,
-    Collection,
+    slugify,
 )
 
 
 # ---------------------------------------------------------------------------
-# Sample fixtures — simulate Vogue's __PRELOADED_STATE__ JSON
+# Fixtures — simulate Vogue's __PRELOADED_STATE__ JSON
 # ---------------------------------------------------------------------------
 
 SAMPLE_DESIGNER_PAGE_HTML = """
@@ -100,8 +102,9 @@ NO_PRELOADED_STATE_HTML = """
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Scraper tests
 # ---------------------------------------------------------------------------
+
 
 class TestSlugify(unittest.TestCase):
     def test_basic(self):
@@ -163,7 +166,7 @@ class TestPickImageUrl(unittest.TestCase):
 
 
 class TestGetDesignerShows(unittest.TestCase):
-    @patch("vogue._fetch_page")
+    @patch("vogue.scraper._fetch_page")
     def test_parses_shows(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_DESIGNER_PAGE_HTML
         session = MagicMock()
@@ -177,7 +180,7 @@ class TestGetDesignerShows(unittest.TestCase):
 
 
 class TestGetShowImages(unittest.TestCase):
-    @patch("vogue._fetch_page")
+    @patch("vogue.scraper._fetch_page")
     def test_parses_images(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_SHOW_PAGE_HTML
         session = MagicMock()
@@ -186,27 +189,21 @@ class TestGetShowImages(unittest.TestCase):
         self.assertEqual(len(images), 3)
         self.assertEqual(images[0].url, "https://assets.vogue.com/photos/abc/xl.jpg")
         self.assertEqual(images[0].index, 1)
-        # Second image has no xl, should fall back to lg then md
         self.assertEqual(images[1].url, "https://assets.vogue.com/photos/def/md.jpg")
         self.assertEqual(images[1].index, 2)
-        # Third image only has xl
         self.assertEqual(images[2].url, "https://assets.vogue.com/photos/ghi/xl.jpg")
         self.assertEqual(images[2].index, 3)
 
-    @patch("vogue._fetch_page")
+    @patch("vogue.scraper._fetch_page")
     def test_prefers_md(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_SHOW_PAGE_HTML
         session = MagicMock()
         images = get_show_images("Yohji Yamamoto", "fall-2024-ready-to-wear", session, "md")
-
-        # First image: md is available, should pick md
         self.assertEqual(images[0].url, "https://assets.vogue.com/photos/abc/md.jpg")
-
 
 
 class TestSaveMetadata(unittest.TestCase):
     def test_writes_json(self):
-        import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             out = Path(tmpdir) / "test_collection"
             images = [
@@ -221,9 +218,7 @@ class TestSaveMetadata(unittest.TestCase):
             meta_path = out / "metadata.json"
             self.assertTrue(meta_path.exists())
 
-            with open(meta_path) as f:
-                meta = json.load(f)
-
+            meta = json.loads(meta_path.read_text())
             self.assertEqual(meta["designer"], "Yohji Yamamoto")
             self.assertEqual(meta["show"]["title"], "Fall 2024 Ready-to-Wear")
             self.assertEqual(meta["image_count"], 2)
@@ -231,23 +226,122 @@ class TestSaveMetadata(unittest.TestCase):
             self.assertEqual(meta["images"][0]["url"], "https://example.com/1.jpg")
 
 
-class TestCLI(unittest.TestCase):
-    """Test CLI argument parsing."""
+# ---------------------------------------------------------------------------
+# CLI helper tests
+# ---------------------------------------------------------------------------
 
-    @patch("vogue.get_designer_shows")
-    @patch("vogue._create_session")
-    def test_shows_command(self, mock_session, mock_get_shows):
-        mock_get_shows.return_value = [
+
+class TestPopFlag(unittest.TestCase):
+    def test_found(self):
+        args = ["foo", "--json", "bar"]
+        self.assertTrue(_pop_flag(args, "--json"))
+        self.assertEqual(args, ["foo", "bar"])
+
+    def test_not_found(self):
+        args = ["foo", "bar"]
+        self.assertFalse(_pop_flag(args, "--json"))
+        self.assertEqual(args, ["foo", "bar"])
+
+    def test_multiple_names(self):
+        args = ["foo", "-j"]
+        self.assertTrue(_pop_flag(args, "--json", "-j"))
+        self.assertEqual(args, ["foo"])
+
+    def test_duplicate(self):
+        args = ["--json", "foo", "--json"]
+        self.assertTrue(_pop_flag(args, "--json"))
+        self.assertEqual(args, ["foo"])
+
+
+class TestPopValue(unittest.TestCase):
+    def test_found(self):
+        args = ["foo", "-r", "lg", "bar"]
+        self.assertEqual(_pop_value(args, "-r"), "lg")
+        self.assertEqual(args, ["foo", "bar"])
+
+    def test_not_found(self):
+        args = ["foo", "bar"]
+        self.assertIsNone(_pop_value(args, "-r"))
+
+    def test_default(self):
+        args = ["foo"]
+        self.assertEqual(_pop_value(args, "-r", default="xl"), "xl")
+
+    def test_long_flag(self):
+        args = ["--resolution", "md", "foo"]
+        self.assertEqual(_pop_value(args, "-r", "--resolution"), "md")
+        self.assertEqual(args, ["foo"])
+
+
+class TestTruncate(unittest.TestCase):
+    def test_short_list(self):
+        lines = ["a", "b", "c"]
+        result, notice = _truncate(lines)
+        self.assertEqual(result, lines)
+        self.assertIsNone(notice)
+
+    def test_long_list(self):
+        lines = [f"line-{i}" for i in range(300)]
+        result, notice = _truncate(lines)
+        self.assertEqual(len(result), 200)
+        self.assertEqual(result[0], "line-0")
+        self.assertIn("300", notice)
+        self.assertIn("truncated", notice)
+
+
+# ---------------------------------------------------------------------------
+# CLI command tests
+# ---------------------------------------------------------------------------
+
+
+class TestCmdDesigners(unittest.TestCase):
+    @patch("vogue.cli.create_session")
+    @patch("vogue.cli.get_all_designers")
+    def test_search(self, mock_designers, mock_session):
+        mock_designers.return_value = ["Christian Dior", "Dior Homme", "Prada"]
+        with patch("sys.stdout", new_callable=StringIO) as out:
+            count = cmd_designers(["dior"])
+        self.assertEqual(count, 2)
+        self.assertIn("Christian Dior", out.getvalue())
+        self.assertIn("Dior Homme", out.getvalue())
+        self.assertNotIn("Prada", out.getvalue())
+
+    @patch("vogue.cli.create_session")
+    @patch("vogue.cli.get_all_designers")
+    def test_no_match(self, mock_designers, mock_session):
+        mock_designers.return_value = ["Prada", "Gucci"]
+        with self.assertRaises(CLIError) as ctx:
+            cmd_designers(["dior"])
+        self.assertIn("No designers found", ctx.exception.message)
+
+    @patch("vogue.cli.create_session")
+    @patch("vogue.cli.get_all_designers")
+    def test_json_output(self, mock_designers, mock_session):
+        mock_designers.return_value = ["Prada", "Gucci"]
+        with patch("sys.stdout", new_callable=StringIO) as out:
+            count = cmd_designers(["--json"])
+        self.assertEqual(count, 2)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data, ["Prada", "Gucci"])
+
+
+class TestCmdShows(unittest.TestCase):
+    @patch("vogue.cli.create_session")
+    @patch("vogue.cli.get_designer_shows")
+    def test_lists_shows(self, mock_shows, mock_session):
+        mock_shows.return_value = [
             Show(title="Fall 2024 Ready-to-Wear", slug="fall-2024-ready-to-wear"),
         ]
-        import sys
-        with patch.object(sys, 'argv', ['vogue.py', 'shows', '-d', 'Yohji Yamamoto']):
-            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
-                from vogue import main
-                main()
-                output = mock_stdout.getvalue()
-                self.assertIn("Fall 2024 Ready-to-Wear", output)
-                self.assertIn("1 shows", output)
+        with patch("sys.stdout", new_callable=StringIO) as out:
+            count = cmd_shows(["Yohji Yamamoto"])
+        self.assertEqual(count, 1)
+        self.assertIn("fall-2024-ready-to-wear", out.getvalue())
+        self.assertIn("Fall 2024 Ready-to-Wear", out.getvalue())
+
+    def test_missing_designer(self):
+        with self.assertRaises(CLIError) as ctx:
+            cmd_shows([])
+        self.assertIn("usage:", ctx.exception.message)
 
 
 if __name__ == "__main__":

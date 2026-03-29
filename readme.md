@@ -1,86 +1,168 @@
-# Vogue Runway Scraper
+# vogue
 
-<img src="app_logo.png" alt="Vogue Scraper Logo" width="240">
+CLI for scraping fashion show images from Vogue Runway. Designed for agent consumption via `run(command="...")`.
 
-Download fashion show images from Vogue Runway. Pure HTTP — no browser needed.
+## Install
 
-## Features
-
-- **Interactive mode** — guided terminal UI with autocomplete designer search, show selection, and progress bars
-- **Scriptable CLI** — non-interactive commands for automation and LLM agents
-- **9,000+ designers** — full Vogue Runway index, searchable with autocomplete
-- **Concurrent downloads** — multi-threaded with configurable workers
-- **Resolution selection** — xl, lg, md, sm
-- **Metadata export** — `metadata.json` with show info and image URLs
-
-## Installation
-
-```sh
-git clone https://github.com/jaceyang97/voguescraper.git
-cd voguescraper
-pip install -r requirements.txt
+```
+pip install git+https://github.com/jaceyang97/voguescraper
 ```
 
-## Usage
+Creates the `vogue` command. Also works as `python -m vogue`.
 
-### Interactive mode
+## Quick Reference
 
-```sh
-python vogue.py
+```
+vogue designers [<query>]              Search or list designers
+vogue shows <designer>                 List shows for a designer
+vogue images <designer> <show>         List image URLs
+vogue download <designer> <show|--all> Download images to disk
+vogue info <designer> <show>           Show collection metadata
 ```
 
-Search for any designer with autocomplete, pick shows, choose resolution, and download.
+## Workflow
 
-<p>
-  <img src="demo-search.png" alt="Interactive designer search with autocomplete" width="600">
-</p>
-<p>
-  <img src="demo-download.png" alt="Download progress" width="600">
-</p>
+Typical trajectory from search to download:
 
-### CLI (for scripts / agents)
+```
+$ vogue designers yamamoto
+Yohji Yamamoto
+[1 results | exit:0 | 1.7s]
 
-```sh
-# Search for a designer by name
-python vogue.py designers -q "dior"
+$ vogue shows "Yohji Yamamoto"
+fall-2024-ready-to-wear	Fall 2024 Ready-to-Wear
+fall-2024-menswear	Fall 2024 Menswear
+spring-2024-ready-to-wear	Spring 2024 Ready-to-Wear
+...
+[99 results | exit:0 | 2.2s]
 
-# List all shows for a designer
-python vogue.py shows -d "Christian Dior"
+$ vogue info "Yohji Yamamoto" fall-2024-ready-to-wear
+Designer:  Yohji Yamamoto
+Show:      Fall 2024 Ready-to-Wear
+Slug:      fall-2024-ready-to-wear
+Images:    69
+URL:       https://www.vogue.com/fashion-shows/fall-2024-ready-to-wear/yohji-yamamoto
+[1 results | exit:0 | 3.4s]
 
-# Download a specific collection
-python vogue.py download -d "Christian Dior" -s "Fall 2025 Ready-to-Wear"
+$ vogue images "Yohji Yamamoto" fall-2024-ready-to-wear | head -3
+https://assets.vogue.com/photos/.../00001-yohji-yamamoto-fall-2024-ready-to-wear.jpg
+https://assets.vogue.com/photos/.../00002-yohji-yamamoto-fall-2024-ready-to-wear.jpg
+https://assets.vogue.com/photos/.../00003-yohji-yamamoto-fall-2024-ready-to-wear.jpg
 
-# Download all shows for a designer
-python vogue.py download -d "Christian Dior" --all -o ./output
+$ vogue download "Yohji Yamamoto" fall-2024-ready-to-wear
+  fall-2024-ready-to-wear: 69 images -> output/yohji-yamamoto/fall-2024-ready-to-wear
+fall-2024-ready-to-wear: 69 images -> output/yohji-yamamoto/fall-2024-ready-to-wear
+[69 results | exit:0 | 31.8s]
 ```
 
-#### Download flags
+## Output Contracts
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-d`, `--designer` | Designer/brand name | required |
-| `-s`, `--season` | Season name (single collection) | — |
-| `--all` | Download all shows | false |
-| `-o`, `--output` | Output directory | `.` |
-| `-w`, `--workers` | Concurrent download threads | 4 |
-| `-r`, `--resolution` | Image resolution (`xl`, `lg`, `md`, `sm`) | `xl` |
+Every command writes results to stdout and metadata to stderr.
 
-### Output structure
+**stdout** (pipeable, one record per line):
+
+| Command | Format | Example |
+|---------|--------|---------|
+| `designers` | `name` | `Yohji Yamamoto` |
+| `shows` | `slug\ttitle` | `fall-2024-ready-to-wear\tFall 2024 Ready-to-Wear` |
+| `images` | `url` | `https://assets.vogue.com/photos/.../xl.jpg` |
+| `download` | `slug: N images -> path` | `fall-2024-ready-to-wear: 69 images -> output/yohji-yamamoto/fall-2024-ready-to-wear` |
+| `info` | `Key:  value` | `Designer:  Yohji Yamamoto` |
+
+**stderr** (metadata footer on every command):
+
+```
+[N results | exit:CODE | DURATION]
+```
+
+Piping only captures stdout, so `vogue designers dior | wc -l` returns `4`, not 5.
+
+**`--json` flag** returns structured data on stdout:
+
+```
+$ vogue shows "Yohji Yamamoto" --json
+[{"title": "Fall 2024 Ready-to-Wear", "slug": "fall-2024-ready-to-wear"}, ...]
+
+$ vogue info "Yohji Yamamoto" fall-2024-ready-to-wear --json
+{"designer": "Yohji Yamamoto", "show": "Fall 2024 Ready-to-Wear", "slug": "fall-2024-ready-to-wear", "images": 69, "url": "..."}
+```
+
+## Error Patterns
+
+Every error includes what went wrong and what to do next.
+
+**Missing args** (progressive discovery):
+
+```
+$ vogue shows
+[error] usage: vogue shows <designer> [--json]
+  Find designers: vogue designers <query>
+[exit:1 | 0ms]
+```
+
+**Not found**:
+
+```
+$ vogue shows "Christain Dior"
+[error] Page not found (Christain Dior).
+  Check the designer name or show slug.
+[exit:1 | 0.8s]
+```
+
+**Bad flag value**:
+
+```
+$ vogue images "Dior" show -r huge
+[error] Invalid resolution "huge".
+  Available: xl, lg, md, sm
+[exit:1 | 0ms]
+```
+
+**Overflow** (>200 lines truncated, full output written to temp file):
+
+```
+$ vogue designers
+3.1 Phillip Lim
+A Detacher
+...
+--- output truncated (3000 lines) ---
+Full output: /tmp/vogue-output/output-1711700000.txt
+Explore: cat /tmp/vogue-output/output-1711700000.txt | grep <pattern>
+         cat /tmp/vogue-output/output-1711700000.txt | tail -100
+[3000 results | exit:0 | 1.2s]
+```
+
+## Flags
+
+| Flag | Applies to | Description |
+|------|-----------|-------------|
+| `--json`, `-j` | all | Output as JSON |
+| `-r RES` | `images`, `download` | Resolution: `xl`, `lg`, `md`, `sm` (default: `xl`) |
+| `-o DIR` | `download` | Output directory (default: `output`) |
+| `-w N` | `download` | Parallel workers (default: `4`) |
+| `--all` | `download` | Download every show for a designer |
+
+## Download Output
 
 ```
 output/
-  christian-dior/
-    fall-2025-ready-to-wear/
+  yohji-yamamoto/
+    fall-2024-ready-to-wear/
       metadata.json
       001.jpg
       002.jpg
       ...
 ```
 
+`metadata.json` contains designer, show title/slug, image count, and all image URLs.
+
+## Development
+
+```
+pip install -e .
+python -m pytest tests/
+```
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
-## Disclaimer
-
-Not affiliated with Vogue or Conde Nast. For educational and non-commercial use only.
+MIT
